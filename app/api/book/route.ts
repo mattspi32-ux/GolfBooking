@@ -39,50 +39,57 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Step 2: Get available slots to try booking
-    // If the frontend passed the actual available slot data, use that directly
-    // to avoid time-format mismatches from re-fetching + string matching.
-    // Otherwise, fall back to re-fetching and matching by preferred times.
+    // Step 2: Always fetch a fresh tee sheet in THIS session.
+    // Booking URLs contain session-bound tokens that are only valid for the
+    // session that requested the tee sheet. The URLs passed from the frontend
+    // were fetched in a different session (the tee-times step) and won't work.
+    const { slots } = await client.getTeeSheet(date);
+    const available = slots.filter((s) => s.available && s.href);
+
+    if (available.length === 0) {
+      return NextResponse.json({
+        success: false,
+        error: "No available tee times found for this date.",
+      });
+    }
+
+    // Step 3: Order slots by preference.
+    // Use the times the user selected (from passedSlots or preferredTimes)
+    // to determine priority, but use the fresh hrefs from this session.
+    const wantedTimes: string[] = [];
+    if (Array.isArray(passedSlots) && passedSlots.length > 0) {
+      wantedTimes.push(...passedSlots.map((s: any) => s.time));
+    } else if (Array.isArray(preferredTimes)) {
+      wantedTimes.push(...preferredTimes);
+    }
+
     let slotsToTry: { time: string; href: string }[] = [];
 
-    if (Array.isArray(passedSlots) && passedSlots.length > 0) {
-      // Use slots passed from the tee-times step (already validated as available)
-      slotsToTry = passedSlots;
-    } else if (Array.isArray(preferredTimes) && preferredTimes.length > 0) {
-      // Fallback: re-fetch tee sheet and match by preferred time
-      const { slots } = await client.getTeeSheet(date);
-      const available = slots.filter((s) => s.available);
-
-      for (const preferred of preferredTimes) {
-        // Flexible matching: compare with and without leading zeros / seconds
-        const normalised = preferred.replace(/^0/, "").replace(/:00$/, "");
-        const match = available.find((s) => {
-          const slotNorm = s.time.replace(/^0/, "").replace(/:00$/, "");
-          return (
-            s.time === preferred ||
-            slotNorm === normalised ||
-            s.time.startsWith(preferred) ||
-            preferred.startsWith(s.time)
-          );
-        });
-        if (match?.href) {
+    if (wantedTimes.length > 0) {
+      // Match wanted times against fresh available slots
+      for (const wanted of wantedTimes) {
+        const match = available.find(
+          (s) =>
+            s.time === wanted ||
+            s.time.startsWith(wanted) ||
+            wanted.startsWith(s.time)
+        );
+        if (match) {
           slotsToTry.push({ time: match.time, href: match.href });
         }
       }
     }
 
+    // If no preference matches, try all available slots
     if (slotsToTry.length === 0) {
-      return NextResponse.json({
-        success: false,
-        error: "No available tee times to attempt booking.",
-      });
+      slotsToTry = available.map((s) => ({ time: s.time, href: s.href }));
     }
 
-    // Step 3: Try booking each slot in order until one succeeds
+    // Step 4: Try booking each slot in order until one succeeds
     const errors: string[] = [];
 
     for (const slot of slotsToTry) {
-      // Get the booking page tokens
+      // Get the booking page tokens (same session = valid tokens)
       const tokens = await client.getBookingTokens(slot.href);
       if (!tokens) {
         errors.push(`${slot.time}: could not obtain booking tokens`);

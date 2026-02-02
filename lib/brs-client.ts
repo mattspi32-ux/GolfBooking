@@ -307,12 +307,14 @@ export class BRSClient {
   }
 
   /**
-   * Fetch booking tokens for a specific tee time slot.
+   * Fetch booking tokens and form action URL for a specific tee time slot.
    */
   async getBookingTokens(
     href: string
-  ): Promise<{ token: string; _token: string } | null> {
-    const url = `https://members.brsgolf.com${href}`;
+  ): Promise<{ token: string; _token: string; formAction: string } | null> {
+    const url = href.startsWith("http")
+      ? href
+      : `https://members.brsgolf.com${href}`;
     const res = await this.get(url);
     const html = await res.text();
     const $ = cheerio.load(html);
@@ -322,8 +324,11 @@ export class BRSClient {
       'input[name="member_booking_form[_token]"]'
     ).val() as string;
 
+    // Extract the form action URL — this is the correct store endpoint
+    const formAction = $("form").attr("action") ?? "";
+
     if (!token || !_token) return null;
-    return { token, _token };
+    return { token, _token, formAction };
   }
 
   /**
@@ -332,11 +337,23 @@ export class BRSClient {
   async bookSlot(
     date: string,
     time: string,
-    tokens: { token: string; _token: string },
+    tokens: { token: string; _token: string; formAction: string },
     players: { p1: string; p2?: string; p3?: string; p4?: string },
     holes: string = "18"
   ): Promise<BookingResult> {
-    const url = `https://members.brsgolf.com/${this.clubName}/bookings/store/1/${date}/${time}`;
+    // Use the form action from the booking page if available,
+    // otherwise construct the store URL from date/time
+    let url: string;
+    if (tokens.formAction) {
+      url = tokens.formAction.startsWith("http")
+        ? tokens.formAction
+        : `https://members.brsgolf.com${tokens.formAction}`;
+    } else {
+      // Fallback: construct URL (date as YYYYMMDD, time as HHMM)
+      const compactDate = date.replace(/\//g, "");
+      const compactTime = time.replace(/:/g, "");
+      url = `https://members.brsgolf.com/${this.clubName}/bookings/store/1/${compactDate}/${compactTime}`;
+    }
 
     const payload = new URLSearchParams({
       "member_booking_form[token]": tokens.token,
