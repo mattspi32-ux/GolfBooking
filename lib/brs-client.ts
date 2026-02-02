@@ -163,6 +163,40 @@ export class BRSClient {
     return res;
   }
 
+  /** Make a POST request with multipart/form-data encoding, tracking cookies */
+  private async postMultipart(
+    url: string,
+    formData: FormData,
+    extraHeaders?: Record<string, string>
+  ): Promise<Response> {
+    const headers: Record<string, string> = {
+      ...COMMON_HEADERS,
+      // Don't set Content-Type — fetch will set it with the boundary
+      ...(extraHeaders ?? {}),
+    };
+    if (!this.cookies.isEmpty()) {
+      headers["Cookie"] = this.cookies.toString();
+    }
+    const res = await fetch(url, {
+      method: "POST",
+      headers,
+      body: formData,
+      redirect: "manual",
+    });
+    this.cookies.addFromResponse(res);
+
+    // Follow redirect after POST
+    const location = res.headers.get("location");
+    if (location && (res.status === 301 || res.status === 302 || res.status === 303)) {
+      const absoluteUrl = location.startsWith("http")
+        ? location
+        : new URL(location, url).href;
+      return this.get(absoluteUrl);
+    }
+
+    return res;
+  }
+
   /**
    * Full login flow:
    * 1. GET club URL -> collect PHPSESSID
@@ -320,6 +354,7 @@ export class BRSClient {
     href: string
   ): Promise<{
     csrfToken: string;
+    slotToken: string;
     formAction: string;
     vendorTxCode: string;
   } | null> {
@@ -330,19 +365,24 @@ export class BRSClient {
     const html = await res.text();
     const $ = cheerio.load(html);
 
-    // The CSRF token is a standalone hidden input named "_token"
-    const csrfToken = $('input[name="_token"]').val() as string;
+    // CSRF token: standalone hidden input OR inside form namespace
+    const csrfToken =
+      ($('input[name="_token"]').val() as string) ||
+      ($('input[name="member_booking_form[_token]"]').val() as string);
+
+    // Slot-specific booking token (separate from CSRF)
+    const slotToken =
+      ($('input[name="member_booking_form[token]"]').val() as string) ?? "";
 
     // The form action is on the first form (the booking form)
     const formAction = $("form").first().attr("action") ?? "";
 
     // Vendor tx code (usually empty)
-    const vendorTxCode = $(
-      'input[name="member_booking_form[vendor-tx-code]"]'
-    ).val() as string ?? "";
+    const vendorTxCode =
+      ($('input[name="member_booking_form[vendor-tx-code]"]').val() as string) ?? "";
 
     if (!csrfToken) return null;
-    return { csrfToken, formAction, vendorTxCode };
+    return { csrfToken, slotToken, formAction, vendorTxCode };
   }
 
   /**
@@ -354,7 +394,7 @@ export class BRSClient {
   async bookSlot(
     date: string,
     time: string,
-    tokens: { csrfToken: string; formAction: string; vendorTxCode: string },
+    tokens: { csrfToken: string; slotToken: string; formAction: string; vendorTxCode: string },
     players: { p1: string; p2?: string; p3?: string; p4?: string },
     holes: string = "18"
   ): Promise<BookingResult> {
@@ -370,18 +410,22 @@ export class BRSClient {
       url = `https://members.brsgolf.com/${this.clubName}/bookings/store/1/${compactDate}/${compactTime}`;
     }
 
-    const payload = new URLSearchParams();
-    payload.append("_token", tokens.csrfToken);
-    payload.append("member_booking_form[player_1]", players.p1);
-    payload.append("member_booking_form[player_2]", players.p2 ?? "");
-    payload.append("member_booking_form[player_3]", players.p3 ?? "");
-    payload.append("member_booking_form[player_4]", players.p4 ?? "");
-    payload.append("member_booking_form[vendor-tx-code]", tokens.vendorTxCode);
-    // The confirm button — BRS may require this to distinguish a real submit
-    payload.append("member_booking_form[confirm_booking]", "");
+    // Build multipart/form-data payload matching the real BRS form structure
+    const formData = new FormData();
+    formData.append("member_booking_form[token]", tokens.slotToken);
+    formData.append("member_booking_form[holes]", holes);
+    formData.append("member_booking_form[player_1]", players.p1);
+    formData.append("member_booking_form[player_2]", players.p2 ?? "");
+    formData.append("member_booking_form[guest-rate-2]", "");
+    formData.append("member_booking_form[player_3]", players.p3 ?? "");
+    formData.append("member_booking_form[guest-rate-3]", "");
+    formData.append("member_booking_form[player_4]", players.p4 ?? "");
+    formData.append("member_booking_form[guest-rate-4]", "");
+    formData.append("member_booking_form[vendor-tx-code]", tokens.vendorTxCode);
+    formData.append("member_booking_form[_token]", tokens.csrfToken);
 
     try {
-      const res = await this.post(url, payload, {
+      const res = await this.postMultipart(url, formData, {
         Origin: "https://members.brsgolf.com",
         Referer: `https://members.brsgolf.com${tokens.formAction}`,
       });
@@ -453,7 +497,7 @@ export class BRSClient {
   async debugBookSlot(
     date: string,
     time: string,
-    tokens: { csrfToken: string; formAction: string; vendorTxCode: string },
+    tokens: { csrfToken: string; slotToken: string; formAction: string; vendorTxCode: string },
     players: { p1: string; p2?: string; p3?: string; p4?: string },
     holes: string = "18"
   ): Promise<Record<string, unknown>> {
@@ -468,20 +512,31 @@ export class BRSClient {
       url = `https://members.brsgolf.com/${this.clubName}/bookings/store/1/${compactDate}/${compactTime}`;
     }
 
-    const payload = new URLSearchParams();
-    payload.append("_token", tokens.csrfToken);
-    payload.append("member_booking_form[player_1]", players.p1);
-    payload.append("member_booking_form[player_2]", players.p2 ?? "");
-    payload.append("member_booking_form[player_3]", players.p3 ?? "");
-    payload.append("member_booking_form[player_4]", players.p4 ?? "");
-    payload.append("member_booking_form[vendor-tx-code]", tokens.vendorTxCode);
-    payload.append("member_booking_form[confirm_booking]", "");
+    // Build multipart/form-data matching the real BRS form
+    const formData = new FormData();
+    formData.append("member_booking_form[token]", tokens.slotToken);
+    formData.append("member_booking_form[holes]", holes);
+    formData.append("member_booking_form[player_1]", players.p1);
+    formData.append("member_booking_form[player_2]", players.p2 ?? "");
+    formData.append("member_booking_form[guest-rate-2]", "");
+    formData.append("member_booking_form[player_3]", players.p3 ?? "");
+    formData.append("member_booking_form[guest-rate-3]", "");
+    formData.append("member_booking_form[player_4]", players.p4 ?? "");
+    formData.append("member_booking_form[guest-rate-4]", "");
+    formData.append("member_booking_form[vendor-tx-code]", tokens.vendorTxCode);
+    formData.append("member_booking_form[_token]", tokens.csrfToken);
+
+    // Capture the payload for debug output
+    const payloadEntries: Record<string, string> = {};
+    formData.forEach((value, key) => {
+      payloadEntries[key] = String(value);
+    });
 
     const headers: Record<string, string> = {
       "User-Agent": COMMON_HEADERS["User-Agent"],
       Accept: COMMON_HEADERS["Accept"],
       "Accept-Language": COMMON_HEADERS["Accept-Language"],
-      "Content-Type": "application/x-www-form-urlencoded",
+      // Don't set Content-Type — fetch sets it with boundary for FormData
       Origin: "https://members.brsgolf.com",
       Referer: `https://members.brsgolf.com${tokens.formAction}`,
     };
@@ -493,7 +548,7 @@ export class BRSClient {
     const rawRes = await fetch(url, {
       method: "POST",
       headers,
-      body: payload.toString(),
+      body: formData,
       redirect: "manual",
     });
     this.cookies.addFromResponse(rawRes);
@@ -530,7 +585,7 @@ export class BRSClient {
 
     return {
       postUrl: url,
-      postPayload: Object.fromEntries(payload.entries()),
+      postPayload: payloadEntries,
       rawStatus,
       rawLocation,
       rawTitle: $("title").text(),
