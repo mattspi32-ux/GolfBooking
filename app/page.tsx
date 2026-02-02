@@ -14,7 +14,9 @@ interface TeeTimeSlot {
   time: string;
   href: string;
   available: boolean;
+  bookable: boolean;
   players: number;
+  maxPlayers: number;
 }
 
 interface BookingConfig {
@@ -504,33 +506,41 @@ export default function Home() {
                 yet.
               </p>
             ) : (
-              <div className="max-h-80 overflow-y-auto border border-gray-100 rounded-lg divide-y divide-gray-100">
-                {slots.map((slot, i) => (
-                  <div
-                    key={i}
-                    className={`flex items-center justify-between px-4 py-3 ${
-                      slot.available
-                        ? "bg-green-50"
-                        : "bg-gray-50 opacity-60"
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <span className="font-mono font-semibold text-gray-900">
-                        {slot.time}
-                      </span>
-                      {slot.available ? (
-                        <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium">
-                          Available
+              <div className="max-h-96 overflow-y-auto border border-gray-100 rounded-lg divide-y divide-gray-100">
+                {slots.map((slot, i) => {
+                  const freeSlots = slot.maxPlayers - slot.players;
+                  return (
+                    <div
+                      key={i}
+                      className={`flex items-center justify-between px-4 py-3 ${
+                        slot.available
+                          ? "bg-green-50"
+                          : "bg-gray-50 opacity-60"
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className="font-mono font-semibold text-gray-900">
+                          {slot.time}
                         </span>
-                      ) : (
-                        <span className="text-xs bg-gray-200 text-gray-600 px-2 py-0.5 rounded-full">
-                          Booked ({slot.players} player
-                          {slot.players !== 1 ? "s" : ""})
-                        </span>
-                      )}
+                        {slot.available ? (
+                          <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium">
+                            Available ({freeSlots}/{slot.maxPlayers} free)
+                          </span>
+                        ) : slot.bookable ? (
+                          <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full">
+                            Partially booked ({slot.players}/{slot.maxPlayers})
+                          </span>
+                        ) : (
+                          <span className="text-xs bg-gray-200 text-gray-600 px-2 py-0.5 rounded-full">
+                            {slot.players > 0
+                              ? `Full (${slot.players}/${slot.maxPlayers})`
+                              : "Not bookable"}
+                          </span>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
 

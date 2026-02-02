@@ -39,7 +39,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Step 2: Get tee sheet
-    const slots = await client.getTeeSheet(date);
+    const { slots } = await client.getTeeSheet(date);
     const availableSlots = slots.filter((s) => s.available);
 
     // Step 3: Find best matching slot from preferences

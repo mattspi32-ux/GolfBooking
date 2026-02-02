@@ -22,12 +22,21 @@ const COMMON_HEADERS: Record<string, string> = {
   "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
 };
 
+/** Participant in a tee time slot (from BRS JSON API) */
+export interface TeeTimeParticipant {
+  name: string | null;
+  golfer_id: string | null;
+}
+
 /** Parsed tee time slot */
 export interface TeeTimeSlot {
   time: string;
   href: string;
   available: boolean;
+  bookable: boolean;
   players: number;
+  maxPlayers: number;
+  participants: TeeTimeParticipant[];
 }
 
 /** Booking result */
@@ -91,8 +100,14 @@ export class BRSClient {
   }
 
   /** Make a GET request, tracking cookies */
-  private async get(url: string): Promise<Response> {
-    const headers: Record<string, string> = { ...COMMON_HEADERS };
+  private async get(
+    url: string,
+    extraHeaders?: Record<string, string>
+  ): Promise<Response> {
+    const headers: Record<string, string> = {
+      ...COMMON_HEADERS,
+      ...(extraHeaders ?? {}),
+    };
     if (!this.cookies.isEmpty()) {
       headers["Cookie"] = this.cookies.toString();
     }
@@ -209,56 +224,75 @@ export class BRSClient {
   }
 
   /**
-   * Fetch the tee sheet for a given date and parse available slots.
-   * Uses the server-rendered HTML content. BRS tee sheets render basic
-   * slot info in the initial HTML; the JS adds interactivity but the
-   * core data is present.
+   * Fetch the tee sheet for a given date using BRS's JSON API endpoint.
+   * This returns structured data about every tee time slot including
+   * bookable status, participants, and booking URLs.
    */
-  async getTeeSheet(date: string): Promise<TeeTimeSlot[]> {
-    const url = `https://members.brsgolf.com/${this.clubName}/tee-sheet/1/${date}`;
-    const res = await this.get(url);
-    const html = await res.text();
-    const $ = cheerio.load(html);
+  async getTeeSheet(
+    date: string
+  ): Promise<{ slots: TeeTimeSlot[]; rawHtml: string }> {
+    // BRS exposes a JSON API for tee sheet data, used by their frontend JS
+    const cacheBust = Date.now();
+    const url = `https://members.brsgolf.com/${this.clubName}/tee-sheet/data/1/${date}?_=${cacheBust}`;
+    const res = await this.get(url, {
+      Accept: "application/json, text/javascript, */*; q=0.01",
+      "X-Requested-With": "XMLHttpRequest",
+    });
+    const rawText = await res.text();
+
+    let data: any;
+    try {
+      data = JSON.parse(rawText);
+    } catch {
+      // If JSON parse fails, we may have been redirected to login page
+      return { slots: [], rawHtml: rawText };
+    }
 
     const slots: TeeTimeSlot[] = [];
+    const times = data.times ?? data;
 
-    // BRS tee sheet rows
-    $("tr").each((_, row) => {
-      const $row = $(row);
-      const rowText = $row.text().trim();
+    // The API returns an object keyed by time slot (e.g. "08:00")
+    // Each entry contains tee_time info with bookable status and participants
+    for (const [timeKey, timeData] of Object.entries(times)) {
+      const teeInfo = (timeData as any)?.tee_time ?? timeData;
 
-      // Match time pattern HH:MM in the row
-      const timeMatch = rowText.match(/\b(\d{1,2}:\d{2})\b/);
-      if (!timeMatch) return;
+      const bookable = teeInfo?.bookable === true;
+      const participants: TeeTimeParticipant[] = Array.isArray(
+        teeInfo?.participants
+      )
+        ? teeInfo.participants.map((p: any) => ({
+            name: p.name ?? null,
+            golfer_id: p.golfer_id ?? null,
+          }))
+        : [];
 
-      const time = timeMatch[1];
-      const anchor = $row.find("a").first();
-      const href = anchor.attr("href") ?? "";
+      const namedPlayers = participants.filter((p) => p.name !== null).length;
+      const totalSlots = participants.length || 4;
+      const freeSlots = totalSlots - namedPlayers;
 
-      // Count how many player slots are taken
-      const divs = $row.find("div");
-      let booked = false;
-      let playerCount = 0;
-      divs.each((_, div) => {
-        const text = $(div).text();
-        if (text.includes("Hole")) {
-          booked = true;
-          // Count mentions of "18 Holes" or "9 Holes" as booked players
-          playerCount++;
-        }
-      });
+      // Build the booking href from the tee_time data or construct it
+      let href = teeInfo?.book_url ?? teeInfo?.href ?? teeInfo?.url ?? "";
 
-      if (href || !booked) {
-        slots.push({
-          time,
-          href,
-          available: !booked && href !== "",
-          players: playerCount,
-        });
+      // If no href from API, construct the standard BRS booking URL path
+      if (!href && bookable) {
+        href = `/${this.clubName}/tee-sheet/book/1/${date}/${timeKey}`;
       }
-    });
 
-    return slots;
+      slots.push({
+        time: timeKey,
+        href,
+        available: bookable && freeSlots > 0,
+        bookable,
+        players: namedPlayers,
+        maxPlayers: totalSlots,
+        participants,
+      });
+    }
+
+    // Sort by time
+    slots.sort((a, b) => a.time.localeCompare(b.time));
+
+    return { slots, rawHtml: rawText };
   }
 
   /**
