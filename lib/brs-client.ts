@@ -445,4 +445,102 @@ export class BRSClient {
       };
     }
   }
+
+  /**
+   * Debug version of bookSlot that returns raw diagnostics about the
+   * POST request and response instead of just success/failure.
+   */
+  async debugBookSlot(
+    date: string,
+    time: string,
+    tokens: { csrfToken: string; formAction: string; vendorTxCode: string },
+    players: { p1: string; p2?: string; p3?: string; p4?: string },
+    holes: string = "18"
+  ): Promise<Record<string, unknown>> {
+    let url: string;
+    if (tokens.formAction) {
+      url = tokens.formAction.startsWith("http")
+        ? tokens.formAction
+        : `https://members.brsgolf.com${tokens.formAction}`;
+    } else {
+      const compactDate = date.replace(/\//g, "");
+      const compactTime = time.replace(/:/g, "");
+      url = `https://members.brsgolf.com/${this.clubName}/bookings/store/1/${compactDate}/${compactTime}`;
+    }
+
+    const payload = new URLSearchParams();
+    payload.append("_token", tokens.csrfToken);
+    payload.append("member_booking_form[player_1]", players.p1);
+    payload.append("member_booking_form[player_2]", players.p2 ?? "");
+    payload.append("member_booking_form[player_3]", players.p3 ?? "");
+    payload.append("member_booking_form[player_4]", players.p4 ?? "");
+    payload.append("member_booking_form[vendor-tx-code]", tokens.vendorTxCode);
+    payload.append("member_booking_form[confirm_booking]", "");
+
+    const headers: Record<string, string> = {
+      "User-Agent": COMMON_HEADERS["User-Agent"],
+      Accept: COMMON_HEADERS["Accept"],
+      "Accept-Language": COMMON_HEADERS["Accept-Language"],
+      "Content-Type": "application/x-www-form-urlencoded",
+      Origin: "https://members.brsgolf.com",
+      Referer: `https://members.brsgolf.com${tokens.formAction}`,
+    };
+    if (!this.cookies.isEmpty()) {
+      headers["Cookie"] = this.cookies.toString();
+    }
+
+    // Do the POST without following redirects so we can inspect raw response
+    const rawRes = await fetch(url, {
+      method: "POST",
+      headers,
+      body: payload.toString(),
+      redirect: "manual",
+    });
+    this.cookies.addFromResponse(rawRes);
+
+    const rawStatus = rawRes.status;
+    const rawLocation = rawRes.headers.get("location");
+    const rawBody = await rawRes.text();
+
+    const $ = cheerio.load(rawBody);
+
+    // If there's a redirect, follow it and capture that too
+    let redirectResult: Record<string, unknown> | null = null;
+    if (
+      rawLocation &&
+      (rawStatus === 301 || rawStatus === 302 || rawStatus === 303)
+    ) {
+      const redirectUrl = rawLocation.startsWith("http")
+        ? rawLocation
+        : new URL(rawLocation, url).href;
+      const redirectRes = await this.get(redirectUrl);
+      const redirectBody = await redirectRes.text();
+      const $r = cheerio.load(redirectBody);
+      redirectResult = {
+        url: redirectUrl,
+        status: redirectRes.status,
+        title: $r("title").text(),
+        bodySnippet: $r("body")
+          .text()
+          .replace(/\s+/g, " ")
+          .trim()
+          .substring(0, 1500),
+      };
+    }
+
+    return {
+      postUrl: url,
+      postPayload: Object.fromEntries(payload.entries()),
+      rawStatus,
+      rawLocation,
+      rawTitle: $("title").text(),
+      rawBodyLength: rawBody.length,
+      rawBodySnippet: $("body")
+        .text()
+        .replace(/\s+/g, " ")
+        .trim()
+        .substring(0, 1500),
+      redirect: redirectResult,
+    };
+  }
 }
