@@ -386,6 +386,72 @@ export class BRSClient {
   }
 
   /**
+   * Fetch booking page and return a full analysis of all form fields,
+   * inputs, selects, and hidden values — for debugging the form structure.
+   */
+  async getBookingPageAnalysis(href: string): Promise<Record<string, unknown>> {
+    const url = href.startsWith("http")
+      ? href
+      : `https://members.brsgolf.com${href}`;
+    const res = await this.get(url);
+    const html = await res.text();
+    const $ = cheerio.load(html);
+
+    // Collect all forms
+    const forms: Record<string, unknown>[] = [];
+    $("form").each((_, form) => {
+      const $form = $(form);
+      forms.push({
+        action: $form.attr("action") ?? "",
+        method: $form.attr("method") ?? "",
+        id: $form.attr("id") ?? "",
+        enctype: $form.attr("enctype") ?? "",
+      });
+    });
+
+    // Collect ALL input elements
+    const inputs: Record<string, unknown>[] = [];
+    $("input").each((_, el) => {
+      const $el = $(el);
+      inputs.push({
+        name: $el.attr("name") ?? "",
+        type: $el.attr("type") ?? "",
+        value: ($el.val() as string)?.substring(0, 100) ?? "",
+        id: $el.attr("id") ?? "",
+      });
+    });
+
+    // Collect ALL select elements with their options
+    const selects: Record<string, unknown>[] = [];
+    $("select").each((_, el) => {
+      const $el = $(el);
+      const options: { value: string; text: string; selected: boolean }[] = [];
+      $el.find("option").each((_, opt) => {
+        const $opt = $(opt);
+        options.push({
+          value: ($opt.val() as string) ?? "",
+          text: $opt.text().trim().substring(0, 80),
+          selected: $opt.is("[selected]"),
+        });
+      });
+      selects.push({
+        name: $el.attr("name") ?? "",
+        id: $el.attr("id") ?? "",
+        optionCount: options.length,
+        options: options.slice(0, 10),
+      });
+    });
+
+    return {
+      pageTitle: $("title").text(),
+      forms,
+      inputs,
+      selects,
+      bodySnippet: $("body").text().replace(/\s+/g, " ").trim().substring(0, 500),
+    };
+  }
+
+  /**
    * Book a tee time slot by POSTing to the BRS booking store endpoint.
    *
    * The form payload matches what the BRS booking page submits:

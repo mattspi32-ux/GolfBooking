@@ -36,16 +36,20 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "No available slots found" });
     }
 
-    // Step 3: Get booking page tokens
+    // Step 3: Get booking page analysis (dump all form fields)
+    const bookingPageAnalysis = await client.getBookingPageAnalysis(targetSlot.href);
+
+    // Step 4: Get booking page tokens (fresh session - need to re-fetch)
     const tokens = await client.getBookingTokens(targetSlot.href);
     if (!tokens) {
       return NextResponse.json({
         error: "Could not get booking tokens",
         href: targetSlot.href,
+        bookingPageAnalysis,
       });
     }
 
-    // Step 4: Do the booking POST with full diagnostics
+    // Step 5: Do the booking POST with full diagnostics
     const diagnostics = await client.debugBookSlot(
       date,
       targetSlot.time,
@@ -61,8 +65,10 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       targetSlot: { time: targetSlot.time, href: targetSlot.href },
+      bookingPageAnalysis,
       tokens: {
         csrfToken: tokens.csrfToken.substring(0, 20) + "...",
+        slotToken: tokens.slotToken || "(empty)",
         formAction: tokens.formAction,
         vendorTxCode: tokens.vendorTxCode,
       },
