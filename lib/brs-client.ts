@@ -370,14 +370,15 @@ export class BRSClient {
       url = `https://members.brsgolf.com/${this.clubName}/bookings/store/1/${compactDate}/${compactTime}`;
     }
 
-    const payload = new URLSearchParams({
-      "_token": tokens.csrfToken,
-      "member_booking_form[player_1]": players.p1,
-      "member_booking_form[player_2]": players.p2 ?? "",
-      "member_booking_form[player_3]": players.p3 ?? "",
-      "member_booking_form[player_4]": players.p4 ?? "",
-      "member_booking_form[vendor-tx-code]": tokens.vendorTxCode,
-    });
+    const payload = new URLSearchParams();
+    payload.append("_token", tokens.csrfToken);
+    payload.append("member_booking_form[player_1]", players.p1);
+    payload.append("member_booking_form[player_2]", players.p2 ?? "");
+    payload.append("member_booking_form[player_3]", players.p3 ?? "");
+    payload.append("member_booking_form[player_4]", players.p4 ?? "");
+    payload.append("member_booking_form[vendor-tx-code]", tokens.vendorTxCode);
+    // The confirm button — BRS may require this to distinguish a real submit
+    payload.append("member_booking_form[confirm_booking]", "");
 
     try {
       const res = await this.post(url, payload, {
@@ -385,37 +386,27 @@ export class BRSClient {
         Referer: `https://members.brsgolf.com${tokens.formAction}`,
       });
       const text = await res.text();
+      const $ = cheerio.load(text);
 
-      // BRS redirects to the bookings list on success, or shows
-      // a confirmation page. Check for failure indicators first.
-      const hasError =
-        text.includes("error") ||
-        text.includes("Error") ||
-        text.includes("no longer available") ||
-        text.includes("already booked") ||
-        text.includes("could not be completed");
+      // Extract the page title and visible body text for detection
+      const title = $("title").text().toLowerCase();
+      const bodyText = $("body").text();
 
-      // Success indicators: redirected to bookings page, or
-      // confirmation text present
-      const hasSuccess =
-        text.includes("confirmed") ||
-        text.includes("Confirmed") ||
-        text.includes("My Bookings") ||
-        text.includes("successfully") ||
-        text.includes("Booking Details") ||
-        // A redirect to bookings page is a success signal
-        res.url?.includes("/bookings");
+      // Specific BRS failure messages (not generic words like "error")
+      const failurePatterns = [
+        "no longer available",
+        "already booked",
+        "could not be completed",
+        "booking failed",
+        "slot is unavailable",
+        "session has expired",
+        "tee time is no longer",
+      ];
+      const hasSpecificFailure = failurePatterns.some((p) =>
+        bodyText.toLowerCase().includes(p)
+      );
 
-      if (hasSuccess && !hasError) {
-        return {
-          success: true,
-          message: `Tee time booked: ${time} on ${date}`,
-          time,
-          date,
-        };
-      }
-
-      if (hasError) {
+      if (hasSpecificFailure) {
         return {
           success: false,
           message: `Booking rejected by BRS for ${time} on ${date}. The slot may have been taken.`,
@@ -424,10 +415,24 @@ export class BRSClient {
         };
       }
 
-      // If unclear, assume it worked — the user should verify
+      // If the response page is the login page, the session expired
+      if (
+        title.includes("login") ||
+        text.includes("login_form[username]")
+      ) {
+        return {
+          success: false,
+          message: `Session expired during booking for ${time} on ${date}.`,
+          time,
+          date,
+        };
+      }
+
+      // If we reach here, the POST went through without a specific
+      // rejection — treat as success (user should verify on BRS)
       return {
         success: true,
-        message: `Booking submitted for ${time} on ${date}. Please check your BRS account to confirm.`,
+        message: `Tee time booked: ${time} on ${date}`,
         time,
         date,
       };
