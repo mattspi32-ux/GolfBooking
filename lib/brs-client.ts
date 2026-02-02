@@ -296,6 +296,17 @@ export class BRSClient {
   }
 
   /**
+   * Debug helper: fetch a page and return its raw HTML.
+   */
+  async debugFetchPage(href: string): Promise<string> {
+    const url = href.startsWith("http")
+      ? href
+      : `https://members.brsgolf.com${href}`;
+    const res = await this.get(url);
+    return res.text();
+  }
+
+  /**
    * Fetch booking tokens for a specific tee time slot.
    */
   async getBookingTokens(
