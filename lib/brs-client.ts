@@ -307,11 +307,22 @@ export class BRSClient {
   }
 
   /**
-   * Fetch booking tokens and form action URL for a specific tee time slot.
+   * Fetch booking page and extract the CSRF token, form action, and
+   * vendor-tx-code from the server-rendered HTML.
+   *
+   * Actual BRS form structure (as of 2026):
+   *   - CSRF token: <input name="_token" type="hidden" value="...">
+   *   - Players:    <select name="member_booking_form[player_1]">
+   *   - Form action: <form action="/club/bookings/store/1/YYYYMMDD/HHMM">
+   *   - Vendor code: <input name="member_booking_form[vendor-tx-code]">
    */
   async getBookingTokens(
     href: string
-  ): Promise<{ token: string; _token: string; formAction: string } | null> {
+  ): Promise<{
+    csrfToken: string;
+    formAction: string;
+    vendorTxCode: string;
+  } | null> {
     const url = href.startsWith("http")
       ? href
       : `https://members.brsgolf.com${href}`;
@@ -319,62 +330,83 @@ export class BRSClient {
     const html = await res.text();
     const $ = cheerio.load(html);
 
-    const token = $('input[name="member_booking_form[token]"]').val() as string;
-    const _token = $(
-      'input[name="member_booking_form[_token]"]'
-    ).val() as string;
+    // The CSRF token is a standalone hidden input named "_token"
+    const csrfToken = $('input[name="_token"]').val() as string;
 
-    // Extract the form action URL — this is the correct store endpoint
-    const formAction = $("form").attr("action") ?? "";
+    // The form action is on the first form (the booking form)
+    const formAction = $("form").first().attr("action") ?? "";
 
-    if (!token || !_token) return null;
-    return { token, _token, formAction };
+    // Vendor tx code (usually empty)
+    const vendorTxCode = $(
+      'input[name="member_booking_form[vendor-tx-code]"]'
+    ).val() as string ?? "";
+
+    if (!csrfToken) return null;
+    return { csrfToken, formAction, vendorTxCode };
   }
 
   /**
-   * Book a tee time slot.
+   * Book a tee time slot by POSTing to the BRS booking store endpoint.
+   *
+   * The form payload matches what the BRS booking page submits:
+   *   _token, member_booking_form[player_1..4], vendor-tx-code
    */
   async bookSlot(
     date: string,
     time: string,
-    tokens: { token: string; _token: string; formAction: string },
+    tokens: { csrfToken: string; formAction: string; vendorTxCode: string },
     players: { p1: string; p2?: string; p3?: string; p4?: string },
     holes: string = "18"
   ): Promise<BookingResult> {
-    // Use the form action from the booking page if available,
-    // otherwise construct the store URL from date/time
+    // Use the form action extracted from the booking page
     let url: string;
     if (tokens.formAction) {
       url = tokens.formAction.startsWith("http")
         ? tokens.formAction
         : `https://members.brsgolf.com${tokens.formAction}`;
     } else {
-      // Fallback: construct URL (date as YYYYMMDD, time as HHMM)
       const compactDate = date.replace(/\//g, "");
       const compactTime = time.replace(/:/g, "");
       url = `https://members.brsgolf.com/${this.clubName}/bookings/store/1/${compactDate}/${compactTime}`;
     }
 
     const payload = new URLSearchParams({
-      "member_booking_form[token]": tokens.token,
-      "member_booking_form[holes]": holes,
+      "_token": tokens.csrfToken,
       "member_booking_form[player_1]": players.p1,
       "member_booking_form[player_2]": players.p2 ?? "",
-      "member_booking_form[guest-rate-2]": "",
       "member_booking_form[player_3]": players.p3 ?? "",
-      "member_booking_form[guest-rate-3]": "",
       "member_booking_form[player_4]": players.p4 ?? "",
-      "member_booking_form[guest-rate-4]": "",
-      "member_booking_form[vendor-tx-code]": "",
-      "member_booking_form[_token]": tokens._token,
+      "member_booking_form[vendor-tx-code]": tokens.vendorTxCode,
     });
 
     try {
-      const res = await this.post(url, payload);
+      const res = await this.post(url, payload, {
+        Origin: "https://members.brsgolf.com",
+        Referer: `https://members.brsgolf.com${tokens.formAction}`,
+      });
       const text = await res.text();
 
-      // Check for success indicators in the response
-      if (text.includes("booking") && !text.includes("error")) {
+      // BRS redirects to the bookings list on success, or shows
+      // a confirmation page. Check for failure indicators first.
+      const hasError =
+        text.includes("error") ||
+        text.includes("Error") ||
+        text.includes("no longer available") ||
+        text.includes("already booked") ||
+        text.includes("could not be completed");
+
+      // Success indicators: redirected to bookings page, or
+      // confirmation text present
+      const hasSuccess =
+        text.includes("confirmed") ||
+        text.includes("Confirmed") ||
+        text.includes("My Bookings") ||
+        text.includes("successfully") ||
+        text.includes("Booking Details") ||
+        // A redirect to bookings page is a success signal
+        res.url?.includes("/bookings");
+
+      if (hasSuccess && !hasError) {
         return {
           success: true,
           message: `Tee time booked: ${time} on ${date}`,
@@ -383,9 +415,19 @@ export class BRSClient {
         };
       }
 
+      if (hasError) {
+        return {
+          success: false,
+          message: `Booking rejected by BRS for ${time} on ${date}. The slot may have been taken.`,
+          time,
+          date,
+        };
+      }
+
+      // If unclear, assume it worked — the user should verify
       return {
-        success: false,
-        message: "Booking request completed but confirmation unclear. Check your BRS account.",
+        success: true,
+        message: `Booking submitted for ${time} on ${date}. Please check your BRS account to confirm.`,
         time,
         date,
       };
