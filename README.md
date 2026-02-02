@@ -1,123 +1,88 @@
-# BRS Golf Tee Time Booking Bot
+# Golf Booking Bot
 
-Auto-books tee times on the BRS Golf system for Newcastle United Golf Club (or any BRS-powered club).
+Web-based auto-booking tool for BRS Golf tee times, built with Next.js and deployable on Vercel.
 
-Tee times at popular clubs fill up within minutes of release. This bot authenticates with your BRS account, waits for the exact release time, and books your preferred slot instantly.
+## Features
 
-## Prerequisites
-
-- Python 3.9+
-- Google Chrome (for Selenium tee sheet scraping)
-- ChromeDriver (matching your Chrome version)
-- A BRS Golf member account
-
-## Setup
-
-1. **Clone the repo:**
-   ```bash
-   git clone <repo-url>
-   cd GolfBooking
-   ```
-
-2. **Create a virtual environment and install dependencies:**
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # Linux/Mac
-   # or: venv\Scripts\activate  # Windows
-   pip install -r requirements.txt
-   ```
-
-3. **Configure your credentials:**
-   ```bash
-   cp .env.example .env
-   ```
-   Edit `.env` with your BRS login details:
-   - `BRS_USERNAME` - Your BRS membership number / username
-   - `BRS_PASSWORD` - Your BRS password
-   - `CLUB_NAME` - Your club's BRS identifier (default: `newcastleunited`)
-   - `PLAYER_1` - Your BRS player ID (required)
-   - `PLAYER_2/3/4` - Playing partners' BRS IDs (optional)
-   - `TEE_TIME_PREFERENCES` - Comma-separated preferred times (e.g., `08:00,08:10,08:20`)
-   - `BOOKING_WINDOW_DAYS` - How many days ahead bookings open (default: `7`)
-   - `BOOKING_RELEASE_TIME` - When bookings are released (default: `07:30:00`)
-   - `HOLES` - `18` or `9`
-
-4. **Install ChromeDriver:**
-   ```bash
-   # Option 1: Via package manager
-   sudo apt install chromium-chromedriver  # Debian/Ubuntu
-
-   # Option 2: Via pip
-   pip install chromedriver-autoinstaller
-   ```
-
-## Usage
-
-### Book immediately for a specific date
-```bash
-python book.py --date 2026/02/09
-```
-
-### Auto-book at release time
-Waits until the configured release time, then books the first available preferred slot for the date that just opened:
-```bash
-python book.py --wait
-```
-
-### Override preferred times via CLI
-```bash
-python book.py --date 2026/02/09 --times 09:00,09:10,09:20,09:30
-```
-
-### Dry run (see what's available without booking)
-```bash
-python book.py --date 2026/02/09 --dry-run
-python book.py --wait --dry-run
-```
+- **Web UI** with step-by-step booking flow (login, configure, view times, book)
+- **Club selection** dropdown with option to enter any BRS Golf club identifier
+- **Preferred time priority** - tries your most wanted time first, falls back to alternatives
+- **Player management** - book for up to 4 players
+- **Vercel-ready** - deploys as a serverless Next.js app
+- **Python CLI** also included for command-line usage and scheduled bookings
 
 ## How It Works
 
-1. **Authenticate** - Collects session cookies from BRS domains, extracts CSRF token, and logs in via POST
-2. **Scrape tee sheet** - Uses Selenium (headless Chrome) to render the JavaScript-driven tee sheet and find available slots
-3. **Fetch booking tokens** - Each slot has unique hidden tokens required for the booking POST
-4. **Book** - Sends the booking POST request with tokens and player IDs, trying each preferred time in order
+1. **Login** - Enter your BRS Golf credentials and select your club
+2. **Configure** - Pick a date, preferred tee times, holes, and player IDs
+3. **View** - See all available tee time slots for your chosen date
+4. **Book** - One click to book the best available slot matching your preferences
+
+The app authenticates with BRS Golf's members portal, scrapes the tee sheet, and submits the booking - all server-side via API routes.
+
+## Deploy to Vercel
+
+1. Push this repo to GitHub
+2. Go to [vercel.com](https://vercel.com) and import the repository
+3. Deploy - no environment variables needed (credentials are entered in the UI per-session)
+
+## Local Development
+
+```bash
+npm install
+npm run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000).
+
+## Python CLI (Alternative)
+
+For command-line usage or scheduled auto-booking at release time:
+
+```bash
+pip install -r requirements.txt
+cp .env.example .env   # fill in your details
+python book.py --wait  # waits for release time, then books
+python book.py --date 2026/02/09 --dry-run
+```
 
 ## Project Structure
 
 ```
 GolfBooking/
-├── book.py              # Main entry point / CLI
-├── requirements.txt     # Python dependencies
-├── .env.example         # Configuration template
-├── .gitignore
-└── src/
-    ├── __init__.py
-    ├── auth.py          # BRS login & session management
-    ├── booker.py        # Tee time booking POST logic
-    ├── config.py        # Configuration loader
-    ├── scheduler.py     # Release time wait logic
-    └── tee_sheet.py     # Tee sheet scraping & parsing
+├── app/                        # Next.js web app
+│   ├── layout.tsx
+│   ├── page.tsx                # Main booking UI
+│   ├── globals.css
+│   └── api/
+│       ├── login/route.ts      # Verify BRS credentials
+│       ├── tee-times/route.ts  # Fetch available slots
+│       └── book/route.ts       # Book a tee time
+├── lib/
+│   └── brs-client.ts           # BRS Golf API client (TypeScript)
+├── src/                        # Python CLI version
+│   ├── auth.py
+│   ├── booker.py
+│   ├── config.py
+│   ├── scheduler.py
+│   └── tee_sheet.py
+├── book.py                     # Python CLI entry point
+├── package.json
+├── vercel.json                 # Vercel config (60s timeout)
+├── tailwind.config.ts
+└── tsconfig.json
 ```
 
 ## Finding Your Player ID
 
-Your BRS player ID is needed for the `PLAYER_1` field. To find it:
-
 1. Log into BRS Golf in your browser
-2. Navigate to any booking page
-3. Open browser DevTools (F12) > Network tab
-4. Start a manual booking and inspect the form data in the POST request
-5. Look for `member_booking_form[player_1]` - the value is your player ID
+2. Start a manual booking on any tee time
+3. Open DevTools (F12) > Network tab
+4. Look at the booking form POST data for `member_booking_form[player_1]`
+5. The value is your player ID
 
-## Troubleshooting
+## Security
 
-- **Login fails**: Double-check your username/password. Try logging in manually at `https://members.brsgolf.com/{club}/login`
-- **No tee times found**: The date may not be open yet, or your preferred times may all be booked
-- **Selenium errors**: Ensure Chrome and ChromeDriver versions match. Run `google-chrome --version` and `chromedriver --version`
-- **Cloudflare blocking**: BRS uses Cloudflare protection. The bot uses a realistic User-Agent header, but aggressive rate limiting may trigger blocks
-
-## Notes
-
-- This bot is for personal use to book your own legitimate tee times
-- Check your club's terms of service regarding automated booking
-- Logs are written to `booking.log` for debugging
+- Credentials are sent directly to BRS Golf servers via Vercel API routes
+- Nothing is stored - each session is stateless
+- All traffic uses HTTPS

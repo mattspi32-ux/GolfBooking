@@ -1,24 +1,19 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-*.egg-info/
-dist/
-build/
-*.egg
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
 
-# Virtual environment
-venv/
-env/
-.venv/
+# Next.js
+.next/
+out/
 
 # Environment variables (SECRETS)
 .env
+.env.local
+.env.production.local
 
 # Logs
 *.log
-logfile.log
 
 # IDE
 .vscode/
@@ -26,10 +21,19 @@ logfile.log
 *.swp
 *.swo
 
-# Selenium
-chromedriver
-geckodriver
-
 # OS
 .DS_Store
 Thumbs.db
+
+# Vercel
+.vercel
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
+
+# Python (legacy CLI tool)
+__pycache__/
+*.py[cod]
+venv/
+.venv/
