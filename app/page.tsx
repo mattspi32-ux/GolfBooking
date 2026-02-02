@@ -138,6 +138,20 @@ export default function Home() {
       .map((t) => t.trim())
       .filter(Boolean);
 
+    // Pass the actual available slot data from the tee-times step so the
+    // book endpoint doesn't need to re-fetch + string-match time formats.
+    // Filter to available slots that match preferences (in preference order),
+    // or if none match preferences, send all available slots.
+    const available = slots.filter((s) => s.available && s.href);
+    let orderedSlots = preferredTimes
+      .map((t) => available.find((s) => s.time === t || s.time.startsWith(t) || t.startsWith(s.time)))
+      .filter(Boolean)
+      .map((s) => ({ time: s!.time, href: s!.href }));
+    if (orderedSlots.length === 0) {
+      // No preference match — just send all available slots
+      orderedSlots = available.map((s) => ({ time: s.time, href: s.href }));
+    }
+
     try {
       const res = await fetch("/api/book", {
         method: "POST",
@@ -148,6 +162,7 @@ export default function Home() {
           password,
           date: formattedDate,
           preferredTimes,
+          availableSlots: orderedSlots,
           players: {
             p1: player1,
             p2: player2 || undefined,
@@ -618,10 +633,19 @@ export default function Home() {
                   Booking Failed
                 </h2>
                 <p className="text-gray-600 mb-2">{bookingResult.error}</p>
-                {bookingResult.availableSlots?.length > 0 && (
-                  <p className="text-sm text-gray-500">
-                    Available times were:{" "}
-                    {bookingResult.availableSlots.join(", ")}
+                {bookingResult.details?.length > 0 && (
+                  <div className="text-sm text-gray-500 mt-2 text-left max-w-md mx-auto">
+                    <p className="font-medium mb-1">Details:</p>
+                    <ul className="list-disc list-inside space-y-1">
+                      {bookingResult.details.map((d: string, i: number) => (
+                        <li key={i}>{d}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {bookingResult.triedSlots?.length > 0 && (
+                  <p className="text-sm text-gray-500 mt-2">
+                    Tried times: {bookingResult.triedSlots.join(", ")}
                   </p>
                 )}
               </div>
