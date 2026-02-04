@@ -57,6 +57,7 @@ export default function Home() {
   // Tee times state
   const [slots, setSlots] = useState<TeeTimeSlot[]>([]);
   const [bookingResult, setBookingResult] = useState<any>(null);
+  const [playerName, setPlayerName] = useState("");
 
   const effectiveClub = clubName || customClub;
 
@@ -114,6 +115,11 @@ export default function Home() {
 
       if (data.success) {
         setSlots(data.slots);
+        // Auto-populate player 1 with the logged-in user's ID
+        if (data.playerInfo?.playerId) {
+          setPlayer1(data.playerInfo.playerId);
+          setPlayerName(data.playerInfo.playerName || "");
+        }
         setStep("tee-times");
       } else {
         setError(data.error || "Failed to fetch tee times.");
@@ -429,21 +435,27 @@ export default function Home() {
               {/* Players */}
               <div className="border-t pt-4">
                 <h3 className="text-sm font-medium text-gray-700 mb-3">
-                  Players (BRS Player IDs)
+                  Players
                 </h3>
+                <p className="text-xs text-gray-500 mb-3">
+                  Player 1 is auto-detected when you check available times.
+                  Additional players are optional.
+                </p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs text-gray-500 mb-1">
-                      Player 1 (You) *
+                      Player 1 (You){player1 ? "" : " — detected on next step"}
                     </label>
-                    <input
-                      type="text"
-                      value={player1}
-                      onChange={(e) => setPlayer1(e.target.value)}
-                      placeholder="Your BRS player ID"
-                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:ring-2 focus:ring-green-500 focus:border-green-500"
-                      required
-                    />
+                    {player1 ? (
+                      <div className="w-full border border-green-300 bg-green-50 rounded-lg px-3 py-2 text-sm text-gray-900">
+                        {playerName || `ID: ${player1}`}
+                        <span className="text-xs text-gray-500 ml-2">(#{player1})</span>
+                      </div>
+                    ) : (
+                      <div className="w-full border border-gray-200 bg-gray-50 rounded-lg px-3 py-2 text-sm text-gray-400 italic">
+                        Auto-detected after checking times
+                      </div>
+                    )}
                   </div>
                   <div>
                     <label className="block text-xs text-gray-500 mb-1">

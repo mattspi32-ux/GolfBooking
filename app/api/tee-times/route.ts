@@ -24,10 +24,18 @@ export async function POST(req: NextRequest) {
 
     const { slots, rawHtml } = await client.getTeeSheet(date);
 
+    // Auto-detect the logged-in user's player ID from the first available slot
+    let playerInfo: { playerId: string; playerName: string } | null = null;
+    const firstAvailable = slots.find((s) => s.available && s.href);
+    if (firstAvailable) {
+      playerInfo = await client.getPlayerInfo(firstAvailable.href);
+    }
+
     const response: Record<string, unknown> = {
       success: true,
       slots,
       date,
+      playerInfo,
     };
 
     // Include raw HTML snippet for debugging if requested

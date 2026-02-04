@@ -357,6 +357,34 @@ export class BRSClient {
   }
 
   /**
+   * Fetch a booking page and extract the logged-in user's player ID and name
+   * from the player_1 select (which only contains their own option).
+   */
+  async getPlayerInfo(
+    href: string
+  ): Promise<{ playerId: string; playerName: string } | null> {
+    const url = href.startsWith("http")
+      ? href
+      : `https://members.brsgolf.com${href}`;
+    const res = await this.get(url);
+    const html = await res.text();
+    const $ = cheerio.load(html);
+
+    let playerId = "";
+    let playerName = "";
+    $('select[name="member_booking_form[player_1]"] option').each((_, opt) => {
+      const val = $(opt).val() as string;
+      if (val && val !== "") {
+        playerId = val;
+        playerName = $(opt).text().trim();
+      }
+    });
+
+    if (!playerId) return null;
+    return { playerId, playerName };
+  }
+
+  /**
    * Fetch booking page and return a full analysis of all form fields,
    * inputs, selects, and hidden values — for debugging the form structure.
    */
