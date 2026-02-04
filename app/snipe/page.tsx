@@ -8,7 +8,20 @@ const POPULAR_CLUBS = [
   { value: "", label: "Other (enter manually)" },
 ];
 
-type SnipeStatus = "setup" | "armed" | "firing" | "result";
+type SnipeMode = "setup" | "armed" | "firing" | "result";
+
+interface ScheduledJob {
+  id: string;
+  clubName: string;
+  targetDate: string;
+  preferredTimes: string[];
+  releaseHour: number;
+  releaseMinute: number;
+  status: string;
+  createdAt: string;
+  result?: string;
+  firedAt?: string;
+}
 
 export default function SnipePage() {
   // Credentials
@@ -29,12 +42,17 @@ export default function SnipePage() {
   const [player3, setPlayer3] = useState("");
   const [player4, setPlayer4] = useState("");
 
-  // Snipe state
-  const [status, setStatus] = useState<SnipeStatus>("setup");
+  // Live snipe state (Keep Page Open mode)
+  const [mode, setMode] = useState<SnipeMode>("setup");
   const [countdown, setCountdown] = useState("");
   const [snipeLog, setSnipeLog] = useState<string[]>([]);
   const [result, setResult] = useState<any>(null);
   const [attempts, setAttempts] = useState(0);
+
+  // Scheduled jobs (Set & Forget mode)
+  const [scheduledJobs, setScheduledJobs] = useState<ScheduledJob[]>([]);
+  const [savingJob, setSavingJob] = useState(false);
+  const [jobMessage, setJobMessage] = useState("");
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const firingRef = useRef(false);
@@ -42,10 +60,22 @@ export default function SnipePage() {
 
   const effectiveClub = clubName || customClub;
 
+  // Load scheduled jobs on mount
+  useEffect(() => {
+    loadJobs();
+  }, []);
+
+  async function loadJobs() {
+    try {
+      const res = await fetch("/api/snipe-jobs");
+      const data = await res.json();
+      if (data.jobs) setScheduledJobs(data.jobs);
+    } catch {
+      // Blob store may not be configured yet
+    }
+  }
+
   const getReleaseDate = useCallback((): Date => {
-    // Release time is tonight (or the chosen time) — the moment tee times open.
-    // BRS typically releases times at midnight, 7 days before the play date.
-    // The user sets the date they want to PLAY and the time it becomes available.
     const today = new Date();
     const [hours, minutes] = releaseTime.split(":").map(Number);
     const release = new Date(
@@ -57,7 +87,6 @@ export default function SnipePage() {
       0,
       0
     );
-    // If the release time has already passed today, assume tomorrow
     if (release.getTime() < Date.now()) {
       release.setDate(release.getDate() + 1);
     }
@@ -68,75 +97,72 @@ export default function SnipePage() {
     setSnipeLog((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
   }, []);
 
-  const fireSnipe = useCallback(async (attempt: number): Promise<boolean> => {
-    const formattedDate = targetDate.replace(/-/g, "/");
-    const preferredTimes = timesInput
-      .split(",")
-      .map((t) => t.trim())
-      .filter(Boolean);
+  const fireSnipe = useCallback(
+    async (attempt: number): Promise<boolean> => {
+      const formattedDate = targetDate.replace(/-/g, "/");
+      const preferredTimes = timesInput
+        .split(",")
+        .map((t) => t.trim())
+        .filter(Boolean);
 
-    addLog(`Attempt ${attempt}/${maxRetries}: Sending booking request...`);
+      addLog(`Attempt ${attempt}/${maxRetries}: Sending booking request...`);
 
-    try {
-      const res = await fetch("/api/snipe", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          clubName: effectiveClub,
-          username,
-          password,
-          date: formattedDate,
-          preferredTimes,
-          players: {
-            p1: "",
-            p2: player2 || undefined,
-            p3: player3 || undefined,
-            p4: player4 || undefined,
-          },
-          holes: "18",
-        }),
-      });
-      const data = await res.json();
+      try {
+        const res = await fetch("/api/snipe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            clubName: effectiveClub,
+            username,
+            password,
+            date: formattedDate,
+            preferredTimes,
+            players: {
+              p1: "",
+              p2: player2 || undefined,
+              p3: player3 || undefined,
+              p4: player4 || undefined,
+            },
+            holes: "18",
+          }),
+        });
+        const data = await res.json();
 
-      // Append server-side timing log
-      if (data.log) {
-        data.log.forEach((l: string) => addLog(`  ${l}`));
-      }
+        if (data.log) {
+          data.log.forEach((l: string) => addLog(`  ${l}`));
+        }
 
-      if (data.success) {
-        addLog(`BOOKED! ${data.booking?.message || "Success"} (${data.elapsed}ms)`);
-        setResult(data);
-        setStatus("result");
-        return true;
-      }
+        if (data.success) {
+          addLog(`BOOKED! ${data.booking?.message || "Success"} (${data.elapsed}ms)`);
+          setResult(data);
+          setMode("result");
+          return true;
+        }
 
-      addLog(`Attempt ${attempt} failed: ${data.error} (${data.elapsed}ms)`);
+        addLog(`Attempt ${attempt} failed: ${data.error} (${data.elapsed}ms)`);
 
-      // If tee sheet not available yet, retry
-      if (
-        data.error?.includes("No available") ||
-        data.error?.includes("not be open")
-      ) {
+        if (data.error?.includes("No available") || data.error?.includes("not be open")) {
+          return false;
+        }
+
+        if (attempt >= maxRetries) {
+          setResult(data);
+          setMode("result");
+          return true;
+        }
+        return false;
+      } catch (err: any) {
+        addLog(`Attempt ${attempt} network error: ${err.message}`);
         return false;
       }
-
-      // Other failures — still retry in case it's a timing issue
-      if (attempt >= maxRetries) {
-        setResult(data);
-        setStatus("result");
-        return true; // stop retrying
-      }
-      return false;
-    } catch (err: any) {
-      addLog(`Attempt ${attempt} network error: ${err.message}`);
-      return false;
-    }
-  }, [targetDate, timesInput, effectiveClub, username, password, player2, player3, player4, addLog]);
+    },
+    [targetDate, timesInput, effectiveClub, username, password, player2, player3, player4, addLog]
+  );
 
   const startFiring = useCallback(async () => {
     if (firingRef.current) return;
     firingRef.current = true;
-    setStatus("firing");
+    setMode("firing");
     addLog("Release time reached! Starting booking attempts...");
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -146,7 +172,6 @@ export default function SnipePage() {
         firingRef.current = false;
         return;
       }
-      // Wait before retry — 1s, 2s, 3s, etc.
       if (attempt < maxRetries) {
         const delay = attempt * 1000;
         addLog(`Waiting ${delay / 1000}s before retry...`);
@@ -156,13 +181,13 @@ export default function SnipePage() {
 
     addLog("All attempts exhausted.");
     setResult({ success: false, error: "All snipe attempts failed after retries." });
-    setStatus("result");
+    setMode("result");
     firingRef.current = false;
   }, [addLog, fireSnipe]);
 
   // Countdown timer
   useEffect(() => {
-    if (status !== "armed") return;
+    if (mode !== "armed") return;
 
     const tick = () => {
       const release = getReleaseDate();
@@ -185,11 +210,10 @@ export default function SnipePage() {
 
     tick();
     timerRef.current = setInterval(tick, 200);
-
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [status, getReleaseDate, startFiring]);
+  }, [mode, getReleaseDate, startFiring]);
 
   function handleArm(e: React.FormEvent) {
     e.preventDefault();
@@ -202,14 +226,73 @@ export default function SnipePage() {
     addLog(`Sniper armed. Target: ${targetDate} at times ${timesInput}`);
     addLog(`Release time: ${release.toLocaleString()}`);
     addLog("Waiting for release...");
+    setMode("armed");
+  }
 
-    setStatus("armed");
+  async function handleSchedule(e: React.FormEvent) {
+    e.preventDefault();
+    setSavingJob(true);
+    setJobMessage("");
+
+    const [hours, minutes] = releaseTime.split(":").map(Number);
+    const preferredTimes = timesInput
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
+
+    try {
+      const res = await fetch("/api/snipe-jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clubName: effectiveClub,
+          username,
+          password,
+          targetDate: targetDate.replace(/-/g, "/"),
+          preferredTimes,
+          players: {
+            p1: "",
+            p2: player2 || "",
+            p3: player3 || "",
+            p4: player4 || "",
+          },
+          holes: "18",
+          releaseHour: hours,
+          releaseMinute: minutes,
+        }),
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        setJobMessage("Snipe scheduled! You can close this page.");
+        await loadJobs();
+      } else {
+        setJobMessage(`Error: ${data.error}`);
+      }
+    } catch (err: any) {
+      setJobMessage(`Error: ${err.message}`);
+    } finally {
+      setSavingJob(false);
+    }
+  }
+
+  async function handleDeleteJob(id: string) {
+    try {
+      await fetch("/api/snipe-jobs", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      await loadJobs();
+    } catch {
+      // ignore
+    }
   }
 
   function handleDisarm() {
     if (timerRef.current) clearInterval(timerRef.current);
     firingRef.current = false;
-    setStatus("setup");
+    setMode("setup");
     setSnipeLog([]);
     setCountdown("");
   }
@@ -218,6 +301,131 @@ export default function SnipePage() {
     if (timerRef.current) clearInterval(timerRef.current);
     startFiring();
   }
+
+  // Shared form fields component
+  const formFields = (
+    <>
+      <div className="bg-gray-800 rounded-xl border border-gray-700 p-6">
+        <h2 className="text-lg font-semibold mb-4">Login Details</h2>
+        <div className="space-y-3">
+          <select
+            value={clubName}
+            onChange={(e) => setClubName(e.target.value)}
+            className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white focus:ring-2 focus:ring-red-500"
+          >
+            {POPULAR_CLUBS.map((c) => (
+              <option key={c.value} value={c.value}>
+                {c.label}
+              </option>
+            ))}
+          </select>
+          {clubName === "" && (
+            <input
+              type="text"
+              value={customClub}
+              onChange={(e) => setCustomClub(e.target.value)}
+              placeholder="Club BRS identifier"
+              className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white"
+              required
+            />
+          )}
+          <input
+            type="text"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            placeholder="Username / Membership No."
+            className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white"
+            required
+          />
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="Password"
+            className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white"
+            required
+          />
+        </div>
+      </div>
+
+      <div className="bg-gray-800 rounded-xl border border-gray-700 p-6">
+        <h2 className="text-lg font-semibold mb-4">Snipe Configuration</h2>
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm text-gray-400 mb-1">Date to Play</label>
+            <input
+              type="date"
+              value={targetDate}
+              onChange={(e) => setTargetDate(e.target.value)}
+              className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white focus:ring-2 focus:ring-red-500"
+              required
+            />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-400 mb-1">
+              Booking Release Time
+            </label>
+            <input
+              type="time"
+              value={releaseTime}
+              onChange={(e) => setReleaseTime(e.target.value)}
+              className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white focus:ring-2 focus:ring-red-500"
+              required
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              When BRS releases these tee times (usually 00:00 midnight).
+            </p>
+          </div>
+          <div>
+            <label className="block text-sm text-gray-400 mb-1">
+              Preferred Tee Times (priority order)
+            </label>
+            <input
+              type="text"
+              value={timesInput}
+              onChange={(e) => setTimesInput(e.target.value)}
+              placeholder="08:00, 08:10, 08:20"
+              className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white focus:ring-2 focus:ring-red-500"
+              required
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Comma-separated. First choice tried first.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-gray-800 rounded-xl border border-gray-700 p-6">
+        <h2 className="text-lg font-semibold mb-4">Additional Players (Optional)</h2>
+        <p className="text-xs text-gray-500 mb-3">
+          Player 1 (you) is auto-detected. Add others if needed.
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <input
+            type="text"
+            value={player2}
+            onChange={(e) => setPlayer2(e.target.value)}
+            placeholder="Player 2 ID"
+            className="bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
+          />
+          <input
+            type="text"
+            value={player3}
+            onChange={(e) => setPlayer3(e.target.value)}
+            placeholder="Player 3 ID"
+            className="bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
+          />
+          <input
+            type="text"
+            value={player4}
+            onChange={(e) => setPlayer4(e.target.value)}
+            placeholder="Player 4 ID"
+            className="bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
+          />
+        </div>
+      </div>
+    </>
+  );
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 text-white">
@@ -241,147 +449,139 @@ export default function SnipePage() {
 
       <main className="max-w-3xl mx-auto px-4 py-8">
         {/* Setup Form */}
-        {status === "setup" && (
-          <form onSubmit={handleArm} className="space-y-6">
-            <div className="bg-gray-800 rounded-xl border border-gray-700 p-6">
-              <h2 className="text-lg font-semibold mb-4">Login Details</h2>
-              <div className="space-y-3">
-                <select
-                  value={clubName}
-                  onChange={(e) => setClubName(e.target.value)}
-                  className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white focus:ring-2 focus:ring-red-500"
-                >
-                  {POPULAR_CLUBS.map((c) => (
-                    <option key={c.value} value={c.value}>
-                      {c.label}
-                    </option>
+        {mode === "setup" && (
+          <div className="space-y-6">
+            {formFields}
+
+            {/* Action Buttons */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <button
+                onClick={handleArm}
+                className="bg-red-600 text-white py-3 px-4 rounded-xl font-bold text-lg hover:bg-red-700 transition-colors"
+              >
+                Arm Sniper
+                <span className="block text-xs font-normal text-red-200 mt-0.5">
+                  Keep page open — fires at exact time
+                </span>
+              </button>
+              <button
+                onClick={handleSchedule}
+                disabled={savingJob}
+                className="bg-blue-600 text-white py-3 px-4 rounded-xl font-bold text-lg hover:bg-blue-700 disabled:bg-gray-600 transition-colors"
+              >
+                {savingJob ? "Saving..." : "Set & Forget"}
+                <span className="block text-xs font-normal text-blue-200 mt-0.5">
+                  Close page — runs via scheduled cron
+                </span>
+              </button>
+            </div>
+
+            {jobMessage && (
+              <div
+                className={`px-4 py-3 rounded-lg text-sm ${
+                  jobMessage.includes("Error")
+                    ? "bg-red-900/50 border border-red-700 text-red-300"
+                    : "bg-green-900/50 border border-green-700 text-green-300"
+                }`}
+              >
+                {jobMessage}
+              </div>
+            )}
+
+            {/* Scheduled Jobs List */}
+            {scheduledJobs.length > 0 && (
+              <div className="bg-gray-800 rounded-xl border border-gray-700 p-6">
+                <h2 className="text-lg font-semibold mb-4">Scheduled Snipes</h2>
+                <div className="space-y-3">
+                  {scheduledJobs.map((job) => (
+                    <div
+                      key={job.id}
+                      className="flex items-center justify-between bg-gray-900 rounded-lg px-4 py-3"
+                    >
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`inline-block w-2 h-2 rounded-full ${
+                              job.status === "pending"
+                                ? "bg-yellow-400"
+                                : job.status === "success"
+                                  ? "bg-green-400"
+                                  : job.status === "fired"
+                                    ? "bg-blue-400"
+                                    : "bg-red-400"
+                            }`}
+                          />
+                          <span className="text-sm font-medium">
+                            {job.targetDate} at{" "}
+                            {String(job.releaseHour).padStart(2, "0")}:
+                            {String(job.releaseMinute).padStart(2, "0")}
+                          </span>
+                          <span
+                            className={`text-xs px-2 py-0.5 rounded-full ${
+                              job.status === "pending"
+                                ? "bg-yellow-900/50 text-yellow-300"
+                                : job.status === "success"
+                                  ? "bg-green-900/50 text-green-300"
+                                  : "bg-red-900/50 text-red-300"
+                            }`}
+                          >
+                            {job.status}
+                          </span>
+                        </div>
+                        <p className="text-xs text-gray-500 mt-1">
+                          Times: {job.preferredTimes.join(", ")}
+                          {job.result && ` — ${job.result}`}
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => handleDeleteJob(job.id)}
+                        className="text-gray-500 hover:text-red-400 transition-colors ml-3"
+                        title="Delete"
+                      >
+                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                          />
+                        </svg>
+                      </button>
+                    </div>
                   ))}
-                </select>
-                {clubName === "" && (
-                  <input
-                    type="text"
-                    value={customClub}
-                    onChange={(e) => setCustomClub(e.target.value)}
-                    placeholder="Club BRS identifier"
-                    className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white"
-                    required
-                  />
-                )}
-                <input
-                  type="text"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  placeholder="Username / Membership No."
-                  className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white"
-                  required
-                />
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Password"
-                  className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white"
-                  required
-                />
-              </div>
-            </div>
-
-            <div className="bg-gray-800 rounded-xl border border-gray-700 p-6">
-              <h2 className="text-lg font-semibold mb-4">Snipe Configuration</h2>
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm text-gray-400 mb-1">
-                    Date to Play
-                  </label>
-                  <input
-                    type="date"
-                    value={targetDate}
-                    onChange={(e) => setTargetDate(e.target.value)}
-                    className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white focus:ring-2 focus:ring-red-500"
-                    required
-                  />
                 </div>
-
-                <div>
-                  <label className="block text-sm text-gray-400 mb-1">
-                    Booking Release Time
-                  </label>
-                  <input
-                    type="time"
-                    value={releaseTime}
-                    onChange={(e) => setReleaseTime(e.target.value)}
-                    className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white focus:ring-2 focus:ring-red-500"
-                    required
-                  />
-                  <p className="text-xs text-gray-500 mt-1">
-                    The time when BRS releases these tee times (usually 00:00 midnight).
-                    The sniper will fire at this exact moment.
-                  </p>
-                </div>
-
-                <div>
-                  <label className="block text-sm text-gray-400 mb-1">
-                    Preferred Tee Times (in order of priority)
-                  </label>
-                  <input
-                    type="text"
-                    value={timesInput}
-                    onChange={(e) => setTimesInput(e.target.value)}
-                    placeholder="08:00, 08:10, 08:20"
-                    className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white focus:ring-2 focus:ring-red-500"
-                    required
-                  />
-                  <p className="text-xs text-gray-500 mt-1">
-                    Comma-separated. First choice is tried first. If unavailable, falls through to next.
-                  </p>
-                </div>
+                <button
+                  onClick={loadJobs}
+                  className="mt-3 text-xs text-gray-500 hover:text-gray-300 transition-colors"
+                >
+                  Refresh
+                </button>
               </div>
-            </div>
+            )}
 
-            <div className="bg-gray-800 rounded-xl border border-gray-700 p-6">
-              <h2 className="text-lg font-semibold mb-4">Additional Players (Optional)</h2>
-              <p className="text-xs text-gray-500 mb-3">
-                Player 1 (you) is auto-detected. Add others if needed.
-              </p>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <input
-                  type="text"
-                  value={player2}
-                  onChange={(e) => setPlayer2(e.target.value)}
-                  placeholder="Player 2 ID"
-                  className="bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
-                />
-                <input
-                  type="text"
-                  value={player3}
-                  onChange={(e) => setPlayer3(e.target.value)}
-                  placeholder="Player 3 ID"
-                  className="bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
-                />
-                <input
-                  type="text"
-                  value={player4}
-                  onChange={(e) => setPlayer4(e.target.value)}
-                  placeholder="Player 4 ID"
-                  className="bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
-                />
-              </div>
+            {/* Info */}
+            <div className="bg-gray-800/50 rounded-xl border border-gray-700 p-4 text-xs text-gray-500">
+              <p className="font-medium text-gray-400 mb-2">How it works:</p>
+              <ul className="space-y-1">
+                <li>
+                  <strong className="text-red-400">Arm Sniper</strong> — Keep this page open.
+                  A countdown timer fires the booking at the exact release moment. Most precise.
+                </li>
+                <li>
+                  <strong className="text-blue-400">Set &amp; Forget</strong> — Saves your booking
+                  config to the server. A scheduled cron job fires it automatically — no browser needed.
+                  Requires Vercel Blob Store to be configured. On Hobby plan, cron timing may vary by up to ~60 min.
+                </li>
+              </ul>
             </div>
-
-            <button
-              type="submit"
-              className="w-full bg-red-600 text-white py-3 px-4 rounded-xl font-bold text-lg hover:bg-red-700 transition-colors"
-            >
-              Arm Sniper
-            </button>
-          </form>
+          </div>
         )}
 
         {/* Armed / Countdown */}
-        {(status === "armed" || status === "firing") && (
+        {(mode === "armed" || mode === "firing") && (
           <div className="space-y-6">
             <div className="bg-gray-800 rounded-xl border border-gray-700 p-8 text-center">
-              {status === "armed" ? (
+              {mode === "armed" ? (
                 <>
                   <p className="text-gray-400 text-sm uppercase tracking-wider mb-2">
                     Sniper Armed — Waiting for Release
@@ -404,18 +604,11 @@ export default function SnipePage() {
                     Firing — Attempting to Book
                   </p>
                   <div className="flex items-center justify-center gap-3 my-6">
-                    <svg
-                      className="animate-spin h-8 w-8 text-yellow-400"
-                      viewBox="0 0 24 24"
-                    >
+                    <svg className="animate-spin h-8 w-8 text-yellow-400" viewBox="0 0 24 24">
                       <circle
                         className="opacity-25"
-                        cx="12"
-                        cy="12"
-                        r="10"
-                        stroke="currentColor"
-                        strokeWidth="4"
-                        fill="none"
+                        cx="12" cy="12" r="10"
+                        stroke="currentColor" strokeWidth="4" fill="none"
                       />
                       <path
                         className="opacity-75"
@@ -431,7 +624,7 @@ export default function SnipePage() {
               )}
 
               <div className="flex gap-3 justify-center mt-6">
-                {status === "armed" && (
+                {mode === "armed" && (
                   <button
                     onClick={handleFireNow}
                     className="bg-yellow-600 text-white px-6 py-2 rounded-lg font-medium hover:bg-yellow-700 transition-colors"
@@ -472,49 +665,27 @@ export default function SnipePage() {
         )}
 
         {/* Result */}
-        {status === "result" && result && (
+        {mode === "result" && result && (
           <div className="space-y-6">
             <div className="bg-gray-800 rounded-xl border border-gray-700 p-8 text-center">
               {result.success ? (
                 <>
                   <div className="w-16 h-16 bg-green-900/50 rounded-full flex items-center justify-center mx-auto mb-4">
-                    <svg
-                      className="w-8 h-8 text-green-400"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      strokeWidth={2}
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M5 13l4 4L19 7"
-                      />
+                    <svg className="w-8 h-8 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                     </svg>
                   </div>
                   <h2 className="text-2xl font-bold mb-2">Sniped!</h2>
                   <p className="text-gray-400">{result.booking?.message}</p>
                   {result.elapsed && (
-                    <p className="text-xs text-gray-500 mt-2">
-                      Completed in {result.elapsed}ms
-                    </p>
+                    <p className="text-xs text-gray-500 mt-2">Completed in {result.elapsed}ms</p>
                   )}
                 </>
               ) : (
                 <>
                   <div className="w-16 h-16 bg-red-900/50 rounded-full flex items-center justify-center mx-auto mb-4">
-                    <svg
-                      className="w-8 h-8 text-red-400"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      strokeWidth={2}
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M6 18L18 6M6 6l12 12"
-                      />
+                    <svg className="w-8 h-8 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
                     </svg>
                   </div>
                   <h2 className="text-2xl font-bold mb-2">Snipe Failed</h2>
@@ -532,7 +703,6 @@ export default function SnipePage() {
               )}
             </div>
 
-            {/* Log */}
             <div className="bg-gray-900 rounded-xl border border-gray-700 p-4">
               <h3 className="text-sm font-medium text-gray-400 mb-2">Snipe Log</h3>
               <div className="max-h-64 overflow-y-auto font-mono text-xs space-y-0.5">
@@ -555,7 +725,7 @@ export default function SnipePage() {
 
             <button
               onClick={() => {
-                setStatus("setup");
+                setMode("setup");
                 setResult(null);
                 setSnipeLog([]);
               }}
