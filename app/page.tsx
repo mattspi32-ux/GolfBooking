@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 
 /** Known BRS Golf clubs for the dropdown */
 const POPULAR_CLUBS = [
@@ -193,13 +194,21 @@ export default function Home() {
     <div className="min-h-screen bg-gradient-to-br from-green-50 via-white to-green-50">
       {/* Header */}
       <header className="bg-green-800 text-white shadow-lg">
-        <div className="max-w-3xl mx-auto px-4 py-6">
-          <h1 className="text-2xl font-bold tracking-tight">
-            Golf Booking Bot
-          </h1>
-          <p className="text-green-200 text-sm mt-1">
-            Auto-book BRS Golf tee times
-          </p>
+        <div className="max-w-3xl mx-auto px-4 py-6 flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight">
+              Golf Booking Bot
+            </h1>
+            <p className="text-green-200 text-sm mt-1">
+              Auto-book BRS Golf tee times
+            </p>
+          </div>
+          <Link
+            href="/snipe"
+            className="bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-red-700 transition-colors"
+          >
+            Tee Time Sniper
+          </Link>
         </div>
       </header>
 
