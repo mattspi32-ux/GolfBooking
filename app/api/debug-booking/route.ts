@@ -68,7 +68,7 @@ export async function POST(req: NextRequest) {
       bookingPageAnalysis,
       tokens: {
         csrfToken: tokens.csrfToken.substring(0, 20) + "...",
-        slotToken: tokens.slotToken || "(empty)",
+        autoPlayerId: tokens.autoPlayerId,
         formAction: tokens.formAction,
         vendorTxCode: tokens.vendorTxCode,
       },

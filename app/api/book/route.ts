@@ -21,12 +21,8 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (!players?.p1) {
-      return NextResponse.json(
-        { success: false, error: "Player 1 ID is required." },
-        { status: 400 }
-      );
-    }
+    // Player 1 ID is optional — if not provided, it will be auto-detected
+    // from the booking form (the logged-in user's ID)
 
     const client = new BRSClient(clubName);
 
